@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 from fastapi import FastAPI, Request
@@ -10,7 +11,10 @@ from classifier import classify, THRESHOLDS
 from threshold_store import get_threshold
 
 app = FastAPI(title="Adaptive Reasoning Proxy")
-client = AsyncOpenAI()  # reads OPENAI_API_KEY from environment
+client = AsyncOpenAI(
+    base_url=os.getenv("LLM_BASE_URL", "http://localhost:8080/v1"),
+    api_key=os.getenv("LLM_API_KEY", "none"),
+)
 
 
 @app.get("/health")
@@ -29,7 +33,7 @@ async def proxy(request: Request):
     task = classify(prompt)
     threshold = await get_threshold(task.value, THRESHOLDS[task])
 
-    # Force logprobs on — client doesn't need to ask
+    # Force logprobs on so the entropy engine has signal
     body["logprobs"] = True
     body["top_logprobs"] = 5
     body["stream"] = True
