@@ -35,12 +35,17 @@ average (EMA, alpha=0.15) over a rolling 20-token window.
 adaptive-reasoning-proxy/
 ├── proxy/
 │   ├── main.py              # FastAPI app — drop-in /v1/chat/completions endpoint
-│   ├── entropy_engine.py    # EntropyState dataclass — H(t), EMA, should_stop()
-│   ├── classifier.py        # Regex task router (FACTUAL/REASONING/CODE/CREATIVE)
-│   ├── threshold_store.py   # Redis async store — adaptive threshold updates
+│   ├── entropy_engine.py        # EntropyState dataclass — H(t), EMA, should_stop()
+│   ├── classifier.py            # Regex task router (FACTUAL/REASONING/CODE/CREATIVE)
+│   ├── embedding_classifier.py  # Embedding nearest-centroid router (regex fallback)
+│   ├── entropy_profiles.py      # DTW entropy-profile matching
+│   ├── threshold_store.py       # Redis async store (+ in-memory fallback)
+│   ├── query_log.py             # Async SQLite query log + stats aggregation
 │   └── Dockerfile
-├── dashboard/               # Next.js dashboard (not yet built — next priority)
+├── dashboard/               # Next.js + Recharts dashboard (built)
+├── tests/                   # pytest suite mirroring proxy/
 ├── docker-compose.yml       # proxy + redis + dashboard
+├── pytest.ini
 ├── requirements.txt
 ├── .env.example
 └── CLAUDE.md
@@ -75,35 +80,42 @@ All four Python files are complete and working:
 
 ---
 
-## What needs to be built next
+## Roadmap status — all four priorities complete
 
-### Priority 1 — Tests
-Write pytest tests for:
-- `EntropyState.update()` with mock logprob dicts
-- `EntropyState.should_stop()` edge cases (below min_tokens, window too small, threshold crossing)
-- `classify()` for each TaskType
-- FastAPI endpoint with `httpx.AsyncClient` test client (mock the OpenAI stream)
+### Priority 1 — Tests ✅
+`tests/` mirrors `proxy/` with a pytest suite (56 tests): entropy engine update
+& should_stop edge cases, classifier per TaskType, the FastAPI endpoint via
+`httpx.AsyncClient` with a mocked OpenAI stream (early-stop + natural finish),
+DTW profiles, query log/stats, and embedding-classifier fallback. Run: `pytest`.
 
-### Priority 2 — Dashboard (Next.js)
-A real-time dashboard at `localhost:3000` reading from Redis + a Postgres log table.
-Key components:
-- 4 metric cards: tokens saved, avg latency, stop rate %, cost saved ($)
-- Entropy trace chart (Recharts LineChart) — shows H(t) per token + EMA line,
-  with a vertical marker at the stop point
-- Threshold calibration sliders — one per TaskType, live-updating Redis
-- Query log table — last 50 requests with task type, tokens generated, early_stop bool
+### Priority 2 — Dashboard (Next.js) ✅
+Real-time dashboard in `dashboard/` (Next.js 14 + Recharts), polling the proxy
+every 2s. 4 metric cards, entropy trace chart (H(t) + EMA with threshold and
+stop markers), live threshold sliders, and a 50-row query log table. Reads from
+the proxy's data API (see below). Needs Node.js to run (`npm install && npm run dev`).
+Note: uses a zero-setup **SQLite** query log in the proxy as the stand-in for the
+originally-planned Postgres table.
 
-### Priority 3 — Embedding-based classifier
-Replace the regex `classify()` with a proper ML router:
-- Use `text-embedding-3-small` to embed incoming prompts
-- Cluster into task types using k-means or a lightweight linear classifier
-- Train on a labeled dataset of ~500 prompts per TaskType
-- This is the "week 2" upgrade that makes the project significantly more impressive
+### Priority 3 — Embedding-based classifier ✅
+`embedding_classifier.py` — `classify_async()` embeds the prompt and assigns it
+to the nearest per-task **centroid** by cosine similarity, built from seed
+prompts (expand toward ~500/class for production). Gated by `EMBEDDINGS_ENABLED`
+and falls back to the regex classifier when disabled or the endpoint is down.
 
-### Priority 4 — Entropy profile matching
-Instead of a single threshold per task type, store the full entropy curve shape
-for each task and use DTW (dynamic time warping) distance to match new queries
-to known profiles. More faithful to the EDRM paper's "manifold" framing.
+### Priority 4 — Entropy profile matching ✅
+`entropy_profiles.py` — learns per-task entropy curve shapes online and matches
+new curves with **DTW** distance (`dtw_distance`, `best_match`, `classify_by_profile`).
+Currently an enrichment layer (exposed at `GET /profiles`); does not yet drive the
+stop decision, so it cannot destabilise generation.
+
+## Proxy data API (added for the dashboard)
+
+- `GET /stats` — tokens saved, avg latency, stop rate, cost saved (estimates)
+- `GET /logs?limit=N` — recent requests
+- `GET /trace/latest` — last request's per-token H(t) + EMA + stop index
+- `GET /thresholds` · `POST /thresholds/{task}` — read / set per-task thresholds
+- `POST /feedback` — record a rating to nudge a threshold
+- `GET /profiles` — learned DTW reference curves per task
 
 ---
 
