@@ -57,6 +57,25 @@ async def test_stats_empty_db_is_safe(temp_db):
     assert s["tokens_saved"] == 0
 
 
+async def test_entropy_by_task_averages_early_stops_only(temp_db):
+    await query_log.init_db()
+    await query_log.log_query("factual", 56, True, 80, 0.2)
+    await query_log.log_query("factual", 60, True, 85, 0.4)
+    await query_log.log_query("reasoning", 300, False, 250, 0.9)  # natural finish, excluded
+
+    result = await query_log.entropy_by_task()
+    by_task = {r["task_type"]: r for r in result}
+
+    assert by_task["factual"]["avg_entropy_at_stop"] == pytest.approx(0.3, abs=1e-6)
+    assert by_task["factual"]["n"] == 2
+    assert "reasoning" not in by_task
+
+
+async def test_entropy_by_task_empty_db_is_safe(temp_db):
+    await query_log.init_db()
+    assert await query_log.entropy_by_task() == []
+
+
 def test_latest_trace_roundtrip():
     query_log.set_latest_trace("factual", [0.5, 0.3], [0.5, 0.4], stop_index=2, threshold=0.35)
     t = query_log.get_latest_trace()

@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("QUERY_LOG_DB", str(Path(__file__).parent / "query_log.db"))
 
-# Tunable estimate knobs (clearly labelled — these drive the "saved" metrics).
-# BASELINE_TOKENS is the assumed completion length had we NOT stopped early;
+# These are tunable estimate knobs
+# BASELINE_TOKENS is the assumed completion length had we not stopped early
 # savings are measured against it. COST_PER_1K is a representative price.
 BASELINE_TOKENS = int(os.getenv("BASELINE_TOKENS", "256"))
 COST_PER_1K = float(os.getenv("COST_PER_1K_TOKENS", "0.60"))
@@ -145,6 +145,36 @@ async def stats() -> dict[str, Any]:
         "cost_saved_usd": round(cost_saved, 4),
         "baseline_tokens": BASELINE_TOKENS,
     }
+
+
+async def entropy_by_task() -> list[dict[str, Any]]:
+    """Average final entropy at stop, grouped by task type.
+
+    Scoped to early-stopped requests only, since those are the ones whose
+    final entropy was actually driven by the per-task threshold decision —
+    this is what lets a threshold be checked against where stops are
+    actually landing, instead of eyeballing individual rows.
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT task_type, AVG(final_entropy_ema) AS avg_entropy_at_stop, "
+                "COUNT(*) AS n "
+                "FROM query_log WHERE early_stop = 1 GROUP BY task_type"
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "task_type": r["task_type"],
+                "avg_entropy_at_stop": round(r["avg_entropy_at_stop"], 4),
+                "n": r["n"],
+            }
+            for r in rows
+        ]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not aggregate entropy by task: %s", exc)
+        return []
 
 
 def set_latest_trace(

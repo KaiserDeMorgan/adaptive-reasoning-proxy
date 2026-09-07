@@ -11,8 +11,7 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 
 import query_log
-from classifier import THRESHOLDS, TaskType
-from embedding_classifier import classify_async
+from classifier import THRESHOLDS, TaskType, classify
 from entropy_engine import EntropyState
 from entropy_profiles import classify_by_profile, profile_summary, record_profile
 from threshold_store import (
@@ -64,7 +63,7 @@ async def proxy(request: Request):
     """
     body = await request.json()
     prompt = body["messages"][-1]["content"]
-    task = await classify_async(prompt)
+    task = classify(prompt)
     threshold = await get_threshold(task.value, THRESHOLDS[task])
 
     # Force logprobs on so the entropy engine has signal
@@ -145,6 +144,12 @@ async def _finalize(task_value, state, trace, ema_trace, stop_index, latency_ms,
 async def stats():
     """Aggregate metrics for the dashboard metric cards."""
     return await query_log.stats()
+
+
+@app.get("/stats/entropy")
+async def entropy_by_task():
+    """Average entropy-at-stop per task type, for checking threshold calibration."""
+    return await query_log.entropy_by_task()
 
 
 @app.get("/logs")
